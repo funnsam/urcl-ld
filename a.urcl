@@ -1,0 +1,12 @@
+bits 16
+
+cal !_start
+hlt
+
+!_start .F0
+mov r1 .message
+cal !print
+ret
+
+.message
+dw "Hello, World!\0"
