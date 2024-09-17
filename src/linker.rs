@@ -20,7 +20,7 @@ peg::parser! {
             = ("\n" / quiet! { "\r\n" })+ / ![_];
 
         rule ident() -> &'input str
-            = i:$(['_' | 'a'..='z' | 'A'..='Z']['_' | '0'..='9' | 'a'..='z' | 'A'..='Z']*) { i };
+            = i:$(['_' | 'a'..='z' | 'A'..='Z']['_' | '.' | '0'..='9' | 'a'..='z' | 'A'..='Z']*) { i };
         rule ident_macro() -> &'input str
             = i:$("@"? ident()) { i };
 
@@ -30,6 +30,7 @@ peg::parser! {
         rule line() -> Line<'input>
             = inst:ident_macro() _ "[" __ opr:(operand() ** __) __ "]" { Line::Instruction(inst, opr) }
             / inst:ident_macro() _  opr:(operand() ** _) { Line::Instruction(inst, opr) }
+            / ".." id:ident() { Line::LocalLabelDef(id) }
             / "." id:ident() { Line::LabelDef(id) }
             / "!" ex:ident() __ "." lc:ident() { Line::SymbolDef(ex, lc) };
 
@@ -45,6 +46,7 @@ peg::parser! {
             / "~" i:$(['+' | '-']? ['0'..='9']+) {? i.parse().map_or(Err("number too big"), |n| Ok(Operand::Relative(n))) }
             / "%" id:ident() { Operand::Port(id) }
             / "!" id:ident() { Operand::Symbol(id) }
+            / ".." id:ident() { Operand::LocalLabel(id) }
             / "." id:ident() { Operand::Label(id) }
             / id:ident_macro() { Operand::Ident(id) };
 
@@ -71,6 +73,7 @@ pub struct File<'a> {
 pub enum Line<'a> {
     Instruction(&'a str, Vec<Node<Operand<'a>>>),
     SymbolDef(&'a str, &'a str),
+    LocalLabelDef(&'a str),
     LabelDef(&'a str),
     LabelIdDef(usize),
 }
@@ -85,6 +88,7 @@ pub enum Operand<'a> {
     Relative(i128),
     Port(&'a str),
     Symbol(&'a str),
+    LocalLabel(&'a str),
     Label(&'a str),
     Ident(&'a str),
 
@@ -116,37 +120,53 @@ pub fn link_files<'a>(files: &mut [File<'a>]) {
     }
 
     let mut labels = HashMap::new();
+    let mut loc_lbs = vec![HashMap::new()];
 
     for f in files.iter_mut() {
         labels.clear();
+        if loc_lbs.len() != 1 { loc_lbs.drain(1..); }
+        loc_lbs[0].clear();
 
         for l in f.lines.iter_mut() {
             match l {
+                Line::LocalLabelDef(lb) => {
+                    loc_lbs.last_mut().unwrap().entry(lb.to_string())
+                        .and_modify(|_| panic!())
+                        .or_insert(alloc.alloc());
+                },
                 Line::LabelDef(lb) => {
                     let id = *labels.entry(lb.to_string())
                         .and_modify(|_| panic!())
                         .or_insert(alloc.alloc());
                     *l = Line::LabelIdDef(id);
+                    loc_lbs.push(HashMap::new());
                 },
                 Line::SymbolDef(sym, lb) => {
                     let id = *labels.entry(lb.to_string())
                         .and_modify(|_| panic!())
                         .or_insert(symbols[*sym]);
                     *l = Line::LabelIdDef(id);
+                    loc_lbs.push(HashMap::new());
                 },
                 _ => {},
             }
         }
 
+        let mut local_id = 0;
         for l in f.lines.iter_mut() {
-            if let Line::Instruction(_, ops) = l {
-                for op in ops.iter_mut() {
+            match l {
+                Line::Instruction(_, ops) => for op in ops.iter_mut() {
                     match op.node {
-                        Operand::Symbol(s) => op.node = Operand::IdLabel(symbols[s]),
+                        Operand::LocalLabel(l) => op.node = Operand::IdLabel(loc_lbs[local_id][l]),
                         Operand::Label(l) => op.node = Operand::IdLabel(labels[l]),
+                        Operand::Symbol(s) => op.node = Operand::IdLabel(symbols[s]),
                         _ => {},
                     }
-                }
+                },
+                Line::LabelDef(..) | Line::SymbolDef(..) | Line::LabelIdDef(..) => local_id += 1,
+                Line::LocalLabelDef(lb) => {
+                    *l = Line::LabelIdDef(loc_lbs[local_id][*lb]);
+                },
             }
         }
     }
@@ -179,8 +199,11 @@ impl File<'_> {
                         }
                         writeln!(w)?;
                     },
-                    Line::SymbolDef(sym, lb) => writeln!(w, "!{sym} .{lb}")?,
+
+                    Line::LocalLabelDef(lb) => writeln!(w, "..{lb}")?,
                     Line::LabelDef(lb) => writeln!(w, ".{lb}")?,
+                    Line::SymbolDef(sym, lb) => writeln!(w, "!{sym} .{lb}")?,
+
                     Line::LabelIdDef(id) => writeln!(w, "._{id}")?,
                 }
 
@@ -203,6 +226,7 @@ impl fmt::Display for Operand<'_> {
             Self::Relative(r) => write!(f, "~{r:+}"),
             Self::Port(p) => write!(f, "%{p}"),
             Self::Symbol(s) => write!(f, "!{s}"),
+            Self::LocalLabel(l) => write!(f, "..{l}"),
             Self::Label(l) => write!(f, ".{l}"),
             Self::Ident(i) => write!(f, "{i}"),
             Self::IdLabel(i) => write!(f, "._{i}"),

@@ -6,6 +6,8 @@ hlt
 !_start .F0
 mov r1 .message
 cal !print
+jmp ..exit
+..exit
 ret
 
 .message
