@@ -22,7 +22,7 @@ peg::parser! {
         rule ident() -> &'input str
             = i:$(['_' | 'a'..='z' | 'A'..='Z']['_' | '0'..='9' | 'a'..='z' | 'A'..='Z']*) { i };
         rule ident_macro() -> &'input str
-            = i:$("?"? ident()) { i };
+            = i:$("@"? ident()) { i };
 
         pub rule file() -> File<'input>
             = __ lines:line() ** (_ ___ __) __ { File { lines } };
