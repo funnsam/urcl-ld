@@ -37,17 +37,22 @@ peg::parser! {
             = s:position!() node:_operand() e:position!() { Node { node, span: s..e } };
 
         rule _operand() -> Operand<'input>
-            = "0x" i:$(['0'..='9' | 'a'..='f' | 'A'..='F']+) {? i128::from_str_radix(i, 16).map_or(Err("number too big"), |n| Ok(Operand::Constant(n))) }
-            / "0o" i:$(['0'..='7']+) {? i128::from_str_radix(i, 8).map_or(Err("number too big"), |n| Ok(Operand::Constant(n))) }
-            / "0b" i:$(['0'..='1']+) {? i128::from_str_radix(i, 2).map_or(Err("number too big"), |n| Ok(Operand::Constant(n))) }
-            / i:$(['+' | '-']? ['0'..='9']+) {? i.parse().map_or(Err("number too big"), |n| Ok(Operand::Constant(n))) }
+            = n:numeral() { Operand::Constant(n) }
             / ['r' | 'R' | '$'] i:$(['0'..='9']+) {? i.parse().map_or(Err("number too big"), |n| Ok(Operand::Register(n))) }
             / ['m' | 'M' | '#'] i:$(['0'..='9']+) {? i.parse().map_or(Err("number too big"), |n| Ok(Operand::Memory(n))) }
             / "\"" s:$(([^ '"'] / "\\\"")*) "\"" { Operand::String(s) }
+            / "'" s:$(([^ '\''] / "\\\'")*) "'" { Operand::Character(s) }
+            / "~" i:$(['+' | '-']? ['0'..='9']+) {? i.parse().map_or(Err("number too big"), |n| Ok(Operand::Relative(n))) }
             / "%" id:ident() { Operand::Port(id) }
             / "!" id:ident() { Operand::Symbol(id) }
             / "." id:ident() { Operand::Label(id) }
             / id:ident_macro() { Operand::Ident(id) };
+
+        rule numeral() -> i128
+            = "0x" i:$(['0'..='9' | 'a'..='f' | 'A'..='F']+) {? i128::from_str_radix(i, 16).map_err(|_| "number too big") }
+            / "0o" i:$(['0'..='7']+) {? i128::from_str_radix(i, 8).map_err(|_| "number too big") }
+            / "0b" i:$(['0'..='1']+) {? i128::from_str_radix(i, 2).map_err(|_| "number too big") }
+            / i:$(['+' | '-']? ['0'..='9']+) {? i.parse().map_err(|_| "number too big") };
     }
 }
 
@@ -76,6 +81,8 @@ pub enum Operand<'a> {
     Register(usize),
     Memory(usize),
     String(&'a str),
+    Character(&'a str),
+    Relative(i128),
     Port(&'a str),
     Symbol(&'a str),
     Label(&'a str),
@@ -192,6 +199,8 @@ impl fmt::Display for Operand<'_> {
             Self::Register(r) => write!(f, "r{r}"),
             Self::Memory(m) => write!(f, "m{m}"),
             Self::String(s) => write!(f, "\"{s}\""),
+            Self::Character(c) => write!(f, "'{c}'"),
+            Self::Relative(r) => write!(f, "~{r:+}"),
             Self::Port(p) => write!(f, "%{p}"),
             Self::Symbol(s) => write!(f, "!{s}"),
             Self::Label(l) => write!(f, ".{l}"),
