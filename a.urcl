@@ -9,4 +9,4 @@ cal !print
 ret
 
 .message
-dw "Hello, World!\0"
+dw ["Hello, World!" 0]

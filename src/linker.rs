@@ -1,5 +1,6 @@
 use core::fmt;
 use std::collections::HashMap;
+use std::io::{self, Write};
 
 peg::parser! {
     pub grammar urcl() for str {
@@ -20,13 +21,15 @@ peg::parser! {
 
         rule ident() -> &'input str
             = i:$(['_' | 'a'..='z' | 'A'..='Z']['_' | '0'..='9' | 'a'..='z' | 'A'..='Z']*) { i };
+        rule ident_macro() -> &'input str
+            = i:$("?"? ident()) { i };
 
         pub rule file() -> File<'input>
             = __ lines:line() ** (_ ___ __) __ { File { lines } };
 
         rule line() -> Line<'input>
-            = inst:ident() _ "[" __ opr:(operand() ** __) __ "]" { Line::Instruction(inst, opr) }
-            / inst:ident() _  opr:(operand() ** _) { Line::Instruction(inst, opr) }
+            = inst:ident_macro() _ "[" __ opr:(operand() ** __) __ "]" { Line::Instruction(inst, opr) }
+            / inst:ident_macro() _  opr:(operand() ** _) { Line::Instruction(inst, opr) }
             / "." id:ident() { Line::LabelDef(id) }
             / "!" ex:ident() __ "." lc:ident() { Line::SymbolDef(ex, lc) };
 
@@ -43,7 +46,8 @@ peg::parser! {
             / "\"" s:$(([^ '"'] / "\\\"")*) "\"" { Operand::String(s) }
             / "%" id:ident() { Operand::Port(id) }
             / "!" id:ident() { Operand::Symbol(id) }
-            / "." id:ident() { Operand::Label(id) };
+            / "." id:ident() { Operand::Label(id) }
+            / id:ident_macro() { Operand::Ident(id) };
     }
 }
 
@@ -75,6 +79,8 @@ pub enum Operand<'a> {
     Port(&'a str),
     Symbol(&'a str),
     Label(&'a str),
+    Ident(&'a str),
+
     IdLabel(usize),
 }
 
@@ -139,20 +145,39 @@ pub fn link_files<'a>(files: &mut [File<'a>]) {
     }
 }
 
-impl fmt::Display for File<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for l in self.lines.iter() {
-            match l {
-                Line::Instruction(inst, ops) => {
-                    write!(f, "{inst}")?;
-                    for op in ops.iter() {
-                        write!(f, " {}", op.node)?;
-                    }
-                    writeln!(f)?;
-                },
-                Line::SymbolDef(sym, lb) => writeln!(f, "!{sym} .{lb}")?,
-                Line::LabelDef(lb) => writeln!(f, ".{lb}")?,
-                Line::LabelIdDef(id) => writeln!(f, "._{id}")?,
+impl File<'_> {
+    pub fn write_files(w: &mut impl Write, files: &[Self]) -> io::Result<()> {
+        let mut after_dw = false;
+        for f in files.iter() {
+            for l in f.lines.iter() {
+                if after_dw && matches!(l, Line::SymbolDef(..) | Line::LabelDef(..) | Line::LabelIdDef(..)) {
+                    writeln!(w, "nop")?;
+                }
+
+                match l {
+                    Line::Instruction(inst, ops) if inst.eq_ignore_ascii_case("dw") => {
+                        write!(w, "{inst} [")?;
+                        for op in ops.iter() {
+                            write!(w, " {}", op.node)?;
+                        }
+                        writeln!(w, " ]")?;
+
+                        after_dw = true;
+                        continue;
+                    },
+                    Line::Instruction(inst, ops) => {
+                        write!(w, "{inst}")?;
+                        for op in ops.iter() {
+                            write!(w, " {}", op.node)?;
+                        }
+                        writeln!(w)?;
+                    },
+                    Line::SymbolDef(sym, lb) => writeln!(w, "!{sym} .{lb}")?,
+                    Line::LabelDef(lb) => writeln!(w, ".{lb}")?,
+                    Line::LabelIdDef(id) => writeln!(w, "._{id}")?,
+                }
+
+                after_dw = false;
             }
         }
 
@@ -170,6 +195,7 @@ impl fmt::Display for Operand<'_> {
             Self::Port(p) => write!(f, "%{p}"),
             Self::Symbol(s) => write!(f, "!{s}"),
             Self::Label(l) => write!(f, ".{l}"),
+            Self::Ident(i) => write!(f, "{i}"),
             Self::IdLabel(i) => write!(f, "._{i}"),
         }
     }

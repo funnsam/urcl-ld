@@ -8,17 +8,8 @@ fn main() {
     let mut files = srcs.iter().map(|s| linker::urcl::file(s).unwrap()).collect::<Vec<_>>();
     linker::link_files(&mut files);
 
-    match args.output {
-        Some(p) => {
-            use std::io::Write;
-
-            let mut file = std::fs::File::create(p).unwrap();
-            for f in files.iter() {
-                write!(file, "{f}").unwrap();
-            }
-        },
-        None => for f in files.iter() {
-            print!("{f}");
-        },
-    }
+    args.output.map_or_else(
+        || linker::File::write_files(&mut std::io::stdout(), &files),
+        |p| linker::File::write_files(&mut std::fs::File::create(p).unwrap(), &files),
+    ).unwrap();
 }
