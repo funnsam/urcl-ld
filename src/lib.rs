@@ -182,7 +182,7 @@ impl File<'_> {
                 }
 
                 match l {
-                    Line::Instruction(inst, ops) if inst.eq_ignore_ascii_case("dw") => {
+                    Line::Instruction(inst, ops) if inst.eq_ignore_ascii_case("dw") && ops.len() > 1 => {
                         write!(w, "{inst} [")?;
                         for op in ops.iter() {
                             write!(w, " {}", op.node)?;
