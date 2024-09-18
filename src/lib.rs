@@ -2,6 +2,8 @@ use core::fmt;
 use std::collections::HashMap;
 use std::io::{self, Write};
 
+pub type Span = core::ops::Range<usize>;
+
 peg::parser! {
     pub grammar urcl() for str {
         rule _
@@ -9,15 +11,13 @@ peg::parser! {
                 "/*" ([^ '*'] / ("*" !"/"))* "*/"
                 / "//" [^ '\n']*
                 / [' ' | '\t']+
-            )*};
+            )+};
         rule __
             = quiet! {(
                 "/*" ([^ '*'] / ("*" !"/"))* "*/"
                 / "//" [^ '\n']*
                 / [' ' | '\n' | '\t']+
             )*};
-        rule ___
-            = ("\n" / quiet! { "\r\n" })+ / ![_];
 
         rule ident() -> &'input str
             = i:$(['_' | 'a'..='z' | 'A'..='Z']['_' | '.' | '0'..='9' | 'a'..='z' | 'A'..='Z']*) { i };
@@ -25,18 +25,21 @@ peg::parser! {
             = i:$("@"? ident()) { i };
 
         pub rule file() -> File<'input>
-            = __ lines:line() ** (_ ___ __) __ { File { lines } };
+            = __ lines:line() ** (_? (("\n" / quiet! { "\r\n" })+ / ![_]) __) __ { File { lines } };
 
-        rule line() -> Line<'input>
-            = inst:ident_macro() _ "[" __ opr:(operand() ** __) __ "]" { Line::Instruction(inst, opr) }
-            / inst:ident_macro() _  opr:(operand() ** _) { Line::Instruction(inst, opr) }
+        rule line() -> Node<Line<'input>>
+            = s:position!() l:_line() e:position!() { Node { node: l, span: s..e } };
+        rule _line() -> Line<'input>
+            = "@" ['D' | 'd']['E' | 'e']['F' | 'f']['I' | 'i']['N' | 'n']['E' | 'e'] _ to:ident() _ from:operand() { Line::Define(to, from) }
+            / inst:ident_macro() _ "[" __ opr:(operand() ** __) __ "]" { Line::Instruction(inst, opr) }
+            / inst:ident_macro() _ opr:(operand() ** _) { Line::Instruction(inst, opr) }
+            / inst:ident_macro() { Line::Instruction(inst, vec![]) }
             / ".." id:ident() { Line::LocalLabelDef(id) }
             / "." id:ident() { Line::LabelDef(id) }
             / "!" ex:ident() __ "." lc:ident() { Line::SymbolDef(ex, lc) };
 
         rule operand() -> Node<Operand<'input>>
-            = s:position!() node:_operand() e:position!() { Node { node, span: s..e } };
-
+            = s:position!() op:_operand() e:position!() { Node { node: op, span: s..e } };
         rule _operand() -> Operand<'input>
             = n:numeral() { Operand::Constant(n) }
             / ['r' | 'R' | '$'] i:$(['0'..='9']+) {? i.parse().map_or(Err("number too big"), |n| Ok(Operand::Register(n))) }
@@ -61,17 +64,22 @@ peg::parser! {
 #[derive(Debug, Clone)]
 pub struct Node<T> {
     pub node: T,
-    pub span: core::ops::Range<usize>,
+    pub span: Span,
+}
+
+impl<T: fmt::Display> fmt::Display for Node<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.node.fmt(f) }
 }
 
 #[derive(Debug, Clone)]
 pub struct File<'a> {
-    lines: Vec<Line<'a>>,
+    lines: Vec<Node<Line<'a>>>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Line<'a> {
     Instruction(&'a str, Vec<Node<Operand<'a>>>),
+    Define(&'a str, Node<Operand<'a>>),
     SymbolDef(&'a str, &'a str),
     LocalLabelDef(&'a str),
     LabelDef(&'a str),
@@ -105,71 +113,110 @@ impl IdAlloc {
     }
 }
 
-pub fn link_files<'a>(files: &mut [File<'a>]) {
+pub fn link_files<'a>(files: &mut [File<'a>]) -> Result<(), LinkError> {
     let mut alloc = IdAlloc::default();
     let mut symbols = HashMap::new();
 
-    for f in files.iter() {
+    for (fi, f) in files.iter().enumerate() {
         for l in f.lines.iter() {
-            if let Line::SymbolDef(sym, _) = l {
-                symbols.entry(sym.to_string())
-                    .and_modify(|_| panic!())
-                    .or_insert(alloc.alloc());
+            if let Line::SymbolDef(sym, _) = l.node {
+                if symbols.contains_key(sym) { return Err(LinkErrorType::DuplicatedSymbol.full(fi, l.span.clone())); }
+                symbols.insert(sym.to_string(), alloc.alloc());
             }
         }
     }
 
+    let mut defines = HashMap::new();
     let mut labels = HashMap::new();
     let mut loc_lbs = vec![HashMap::new()];
+    let mut remove = Vec::new();
 
-    for f in files.iter_mut() {
+    for (fi, f) in files.iter_mut().enumerate() {
+        defines.clear();
         labels.clear();
         if loc_lbs.len() != 1 { loc_lbs.drain(1..); }
         loc_lbs[0].clear();
 
         for l in f.lines.iter_mut() {
-            match l {
+            match &l.node {
                 Line::LocalLabelDef(lb) => {
-                    loc_lbs.last_mut().unwrap().entry(lb.to_string())
-                        .and_modify(|_| panic!())
-                        .or_insert(alloc.alloc());
+                    if loc_lbs.last().unwrap().contains_key(*lb) { return Err(LinkErrorType::DuplicatedLocalLabel.full(fi, l.span.clone())); }
+
+                    loc_lbs.last_mut().unwrap().insert(lb.to_string(), alloc.alloc());
                 },
                 Line::LabelDef(lb) => {
+                    if labels.contains_key(*lb) { return Err(LinkErrorType::DuplicatedLabel.full(fi, l.span.clone())); }
+
                     let id = *labels.entry(lb.to_string())
-                        .and_modify(|_| panic!())
                         .or_insert(alloc.alloc());
-                    *l = Line::LabelIdDef(id);
+                    l.node = Line::LabelIdDef(id);
                     loc_lbs.push(HashMap::new());
                 },
                 Line::SymbolDef(sym, lb) => {
+                    if labels.contains_key(*lb) { return Err(LinkErrorType::DuplicatedLabel.full(fi, l.span.clone())); }
+
                     let id = *labels.entry(lb.to_string())
-                        .and_modify(|_| panic!())
                         .or_insert(symbols[*sym]);
-                    *l = Line::LabelIdDef(id);
+                    l.node = Line::LabelIdDef(id);
                     loc_lbs.push(HashMap::new());
+                },
+                Line::Define(from, to) => {
+                    if defines.contains_key(*from) { return Err(LinkErrorType::DuplicatedDefine.full(fi, l.span.clone())); }
+
+                    defines.insert(from.to_string(), to.clone());
                 },
                 _ => {},
             }
         }
 
         let mut local_id = 0;
-        for l in f.lines.iter_mut() {
-            match l {
+        remove.clear();
+
+        for (li, l) in f.lines.iter_mut().enumerate() {
+            match &mut l.node {
                 Line::Instruction(_, ops) => for op in ops.iter_mut() {
-                    match op.node {
-                        Operand::LocalLabel(l) => op.node = Operand::IdLabel(loc_lbs[local_id][l]),
-                        Operand::Label(l) => op.node = Operand::IdLabel(labels[l]),
-                        Operand::Symbol(s) => op.node = Operand::IdLabel(symbols[s]),
-                        _ => {},
-                    }
+                    op.node = resolve_operand(
+                        op.clone(),
+                        &symbols,
+                        &labels,
+                        &loc_lbs[local_id],
+                        &defines,
+                    ).map_err(|e| e.full(fi, op.span.clone()))?;
                 },
                 Line::LabelDef(..) | Line::SymbolDef(..) | Line::LabelIdDef(..) => local_id += 1,
                 Line::LocalLabelDef(lb) => {
-                    *l = Line::LabelIdDef(loc_lbs[local_id][*lb]);
+                    l.node = Line::LabelIdDef(loc_lbs[local_id][*lb]);
                 },
+                Line::Define(..) => remove.push(li),
             }
         }
+
+        for r in remove.iter().rev() {
+            f.lines.remove(*r);
+        }
     }
+
+    Ok(())
+}
+
+fn resolve_operand<'a>(
+    op: Node<Operand<'a>>,
+    symbols: &HashMap<String, usize>,
+    labels: &HashMap<String, usize>,
+    loc_lbs: &HashMap<String, usize>,
+    defines: &HashMap<String, Node<Operand<'a>>>,
+) -> Result<Operand<'a>, LinkErrorType> {
+    Ok(match op.node {
+        Operand::LocalLabel(l)
+            => Operand::IdLabel(*loc_lbs.get(l).ok_or(LinkErrorType::UnknownLocalLabel)?),
+        Operand::Label(l)
+            => Operand::IdLabel(*labels.get(l).ok_or(LinkErrorType::UnknownLabel)?),
+        Operand::Symbol(s)
+            => Operand::IdLabel(*symbols.get(s).ok_or(LinkErrorType::UnknownSymbol)?),
+        Operand::Ident(id)
+            => resolve_operand(defines.get(id).ok_or(LinkErrorType::UnknownIdent)?.clone(), symbols, labels, loc_lbs, defines)?,
+        _ => op.node,
+    })
 }
 
 impl File<'_> {
@@ -177,15 +224,15 @@ impl File<'_> {
         let mut after_dw = false;
         for f in files.iter() {
             for (i, l) in f.lines.iter().enumerate() {
-                if i == 0 && after_dw && matches!(l, Line::SymbolDef(..) | Line::LabelDef(..) | Line::LabelIdDef(..)) {
+                if i == 0 && after_dw && matches!(l.node, Line::SymbolDef(..) | Line::LabelDef(..) | Line::LocalLabelDef(..) | Line::LabelIdDef(..)) {
                     writeln!(w, "nop")?;
                 }
 
-                match l {
+                match &l.node {
                     Line::Instruction(inst, ops) if inst.eq_ignore_ascii_case("dw") && ops.len() > 1 => {
                         write!(w, "{inst} [")?;
                         for op in ops.iter() {
-                            write!(w, " {}", op.node)?;
+                            write!(w, " {op}")?;
                         }
                         writeln!(w, " ]")?;
 
@@ -195,10 +242,12 @@ impl File<'_> {
                     Line::Instruction(inst, ops) => {
                         write!(w, "{inst}")?;
                         for op in ops.iter() {
-                            write!(w, " {}", op.node)?;
+                            write!(w, " {op}")?;
                         }
                         writeln!(w)?;
                     },
+
+                    Line::Define(from, to) => writeln!(w, "@define {from} {to}")?,
 
                     Line::LocalLabelDef(lb) => writeln!(w, "..{lb}")?,
                     Line::LabelDef(lb) => writeln!(w, ".{lb}")?,
@@ -231,5 +280,39 @@ impl fmt::Display for Operand<'_> {
             Self::Ident(i) => write!(f, "{i}"),
             Self::IdLabel(i) => write!(f, "._{i}"),
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct LinkError {
+    pub typ: LinkErrorType,
+    pub file: usize,
+    pub span: Span,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum LinkErrorType {
+    #[error("duplicated symbol")]
+    DuplicatedSymbol,
+    #[error("duplicated label")]
+    DuplicatedLabel,
+    #[error("duplicated local label")]
+    DuplicatedLocalLabel,
+    #[error("duplicated definition")]
+    DuplicatedDefine,
+
+    #[error("unknown symbol")]
+    UnknownSymbol,
+    #[error("unknown label")]
+    UnknownLabel,
+    #[error("unknown local label")]
+    UnknownLocalLabel,
+    #[error("unknown identifier")]
+    UnknownIdent,
+}
+
+impl LinkErrorType {
+    fn full(self, file: usize, span: Span) -> LinkError {
+        LinkError { typ: self, file, span }
     }
 }

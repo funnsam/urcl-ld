@@ -1,13 +1,15 @@
 bits 16
 
+@define func !print
+
 cal !_start
 hlt
 
 !_start .F0
 mov r1 .message1
-cal !print
+cal func
 mov r1 .message2
-cal !print
+cal func
 jmp ..exit
 ..exit
 ret
