@@ -30,7 +30,7 @@ peg::parser! {
         rule line() -> Node<Line<'input>>
             = s:position!() l:_line() e:position!() { Node { node: l, span: s..e } };
         rule _line() -> Line<'input>
-            = "@" ['D' | 'd']['E' | 'e']['F' | 'f']['I' | 'i']['N' | 'n']['E' | 'e'] _ to:ident() _ from:operand() { Line::Define(to, from) }
+            = "@" ['D' | 'd']['E' | 'e']['F' | 'f']['I' | 'i']['N' | 'n']['E' | 'e'] _ to:operand() _ from:operand() { Line::Define(to, from) }
             / inst:ident_macro() _ "[" __ opr:(operand() ** __) __ "]" { Line::Instruction(inst, opr) }
             / inst:ident_macro() _ opr:(operand() ** _) { Line::Instruction(inst, opr) }
             / inst:ident_macro() { Line::Instruction(inst, vec![]) }
@@ -79,14 +79,14 @@ pub struct File<'a> {
 #[derive(Debug, Clone)]
 pub enum Line<'a> {
     Instruction(&'a str, Vec<Node<Operand<'a>>>),
-    Define(&'a str, Node<Operand<'a>>),
+    Define(Node<Operand<'a>>, Node<Operand<'a>>),
     SymbolDef(&'a str, &'a str),
     LocalLabelDef(&'a str),
     LabelDef(&'a str),
     LabelIdDef(usize),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Operand<'a> {
     Constant(i128),
     Register(usize),
@@ -161,9 +161,9 @@ pub fn link_files<'a>(files: &mut [File<'a>]) -> Result<(), LinkError> {
                     loc_lbs.push(HashMap::new());
                 },
                 Line::Define(from, to) => {
-                    if defines.contains_key(*from) { return Err(LinkErrorType::DuplicatedDefine.full(fi, l.span.clone())); }
+                    if defines.contains_key(&from.node) { return Err(LinkErrorType::DuplicatedDefine.full(fi, l.span.clone())); }
 
-                    defines.insert(from.to_string(), to.clone());
+                    defines.insert(from.node.clone(), to.clone());
                 },
                 _ => {},
             }
@@ -204,19 +204,23 @@ fn resolve_operand<'a>(
     symbols: &HashMap<String, usize>,
     labels: &HashMap<String, usize>,
     loc_lbs: &HashMap<String, usize>,
-    defines: &HashMap<String, Node<Operand<'a>>>,
+    defines: &HashMap<Operand<'a>, Node<Operand<'a>>>,
 ) -> Result<Operand<'a>, LinkErrorType> {
-    Ok(match op.node {
+    if let Some(op) = defines.get(&op.node) {
+        return resolve_operand(op.clone(), symbols, labels, loc_lbs, defines);
+    }
+
+    match op.node {
         Operand::LocalLabel(l)
-            => Operand::IdLabel(*loc_lbs.get(l).ok_or(LinkErrorType::UnknownLocalLabel)?),
+            => Ok(Operand::IdLabel(*loc_lbs.get(l).ok_or(LinkErrorType::UnknownLocalLabel)?)),
         Operand::Label(l)
-            => Operand::IdLabel(*labels.get(l).ok_or(LinkErrorType::UnknownLabel)?),
+            => Ok(Operand::IdLabel(*labels.get(l).ok_or(LinkErrorType::UnknownLabel)?)),
         Operand::Symbol(s)
-            => Operand::IdLabel(*symbols.get(s).ok_or(LinkErrorType::UnknownSymbol)?),
-        Operand::Ident(id)
-            => resolve_operand(defines.get(id).ok_or(LinkErrorType::UnknownIdent)?.clone(), symbols, labels, loc_lbs, defines)?,
-        _ => op.node,
-    })
+            => Ok(Operand::IdLabel(*symbols.get(s).ok_or(LinkErrorType::UnknownSymbol)?)),
+        Operand::Ident(_)
+            => Err(LinkErrorType::UnknownIdent),
+        _ => Ok(op.node),
+    }
 }
 
 impl File<'_> {
