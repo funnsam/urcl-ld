@@ -176,8 +176,8 @@ impl File<'_> {
     pub fn write_files(w: &mut impl Write, files: &[Self]) -> io::Result<()> {
         let mut after_dw = false;
         for f in files.iter() {
-            for l in f.lines.iter() {
-                if after_dw && matches!(l, Line::SymbolDef(..) | Line::LabelDef(..) | Line::LabelIdDef(..)) {
+            for (i, l) in f.lines.iter().enumerate() {
+                if i == 0 && after_dw && matches!(l, Line::SymbolDef(..) | Line::LabelDef(..) | Line::LabelIdDef(..)) {
                     writeln!(w, "nop")?;
                 }
 

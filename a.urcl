@@ -4,11 +4,15 @@ cal !_start
 hlt
 
 !_start .F0
-mov r1 .message
+mov r1 .message1
+cal !print
+mov r1 .message2
 cal !print
 jmp ..exit
 ..exit
 ret
 
-.message
-dw ["Hello, World!" 0]
+.message1
+dw ["Hello, World 1!\n" 0]
+.message2
+dw ["Hello, World 2!\n" 0]
