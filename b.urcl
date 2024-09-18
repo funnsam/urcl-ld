@@ -1,10 +1,8 @@
-@define t0 r6
-
 !print .F0 // print(mut msg @ r1: char[]) (uses r6)
 ..loop
-lod t0 r1
-brz ..exit t0
-out %text t0
+lod r6 r1
+brz ..exit r6
+out %text r6
 inc r1 r1
 jmp ..loop
 ..exit

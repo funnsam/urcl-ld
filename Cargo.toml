@@ -9,3 +9,4 @@ edition = "2021"
 
 [dependencies]
 peg = "0.8.4"
+thiserror = "1.0.63"
