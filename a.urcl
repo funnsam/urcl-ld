@@ -1,9 +1,12 @@
 bits 16
 
+@define t0 r5
+
 cal !_start
 hlt
 
 !_start .F0
+inc t0 t0
 mov r1 .message1
 cal !print
 mov r1 .message2

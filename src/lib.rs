@@ -28,16 +28,14 @@ peg::parser! {
             = __ lines:line() ** (_ ___ __) __ { File { lines } };
 
         rule line() -> Line<'input>
-            = inst:ident_macro() _ "[" __ opr:(operand() ** __) __ "]" { Line::Instruction(inst, opr) }
+            = "@" ['D' | 'd']['E' | 'e']['F' | 'f']['I' | 'i']['N' | 'n']['E' | 'e'] _ to:ident() _ from:operand() { Line::Define(to, from) }
+            / inst:ident_macro() _ "[" __ opr:(operand() ** __) __ "]" { Line::Instruction(inst, opr) }
             / inst:ident_macro() _  opr:(operand() ** _) { Line::Instruction(inst, opr) }
             / ".." id:ident() { Line::LocalLabelDef(id) }
             / "." id:ident() { Line::LabelDef(id) }
             / "!" ex:ident() __ "." lc:ident() { Line::SymbolDef(ex, lc) };
 
-        rule operand() -> Node<Operand<'input>>
-            = s:position!() node:_operand() e:position!() { Node { node, span: s..e } };
-
-        rule _operand() -> Operand<'input>
+        rule operand() -> Operand<'input>
             = n:numeral() { Operand::Constant(n) }
             / ['r' | 'R' | '$'] i:$(['0'..='9']+) {? i.parse().map_or(Err("number too big"), |n| Ok(Operand::Register(n))) }
             / ['m' | 'M' | '#'] i:$(['0'..='9']+) {? i.parse().map_or(Err("number too big"), |n| Ok(Operand::Memory(n))) }
@@ -59,19 +57,14 @@ peg::parser! {
 }
 
 #[derive(Debug, Clone)]
-pub struct Node<T> {
-    pub node: T,
-    pub span: core::ops::Range<usize>,
-}
-
-#[derive(Debug, Clone)]
 pub struct File<'a> {
     lines: Vec<Line<'a>>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Line<'a> {
-    Instruction(&'a str, Vec<Node<Operand<'a>>>),
+    Instruction(&'a str, Vec<Operand<'a>>),
+    Define(&'a str, Operand<'a>),
     SymbolDef(&'a str, &'a str),
     LocalLabelDef(&'a str),
     LabelDef(&'a str),
@@ -119,10 +112,13 @@ pub fn link_files<'a>(files: &mut [File<'a>]) {
         }
     }
 
+    let mut defines = HashMap::new();
     let mut labels = HashMap::new();
     let mut loc_lbs = vec![HashMap::new()];
+    let mut remove = Vec::new();
 
     for f in files.iter_mut() {
+        defines.clear();
         labels.clear();
         if loc_lbs.len() != 1 { loc_lbs.drain(1..); }
         loc_lbs[0].clear();
@@ -148,18 +144,28 @@ pub fn link_files<'a>(files: &mut [File<'a>]) {
                     *l = Line::LabelIdDef(id);
                     loc_lbs.push(HashMap::new());
                 },
+                Line::Define(from, to) => {
+                    defines.entry(from.to_string())
+                        .and_modify(|_| panic!())
+                        .or_insert(to.clone());
+                },
                 _ => {},
             }
         }
 
         let mut local_id = 0;
-        for l in f.lines.iter_mut() {
+        remove.clear();
+
+        for (li, l) in f.lines.iter_mut().enumerate() {
             match l {
                 Line::Instruction(_, ops) => for op in ops.iter_mut() {
-                    match op.node {
-                        Operand::LocalLabel(l) => op.node = Operand::IdLabel(loc_lbs[local_id][l]),
-                        Operand::Label(l) => op.node = Operand::IdLabel(labels[l]),
-                        Operand::Symbol(s) => op.node = Operand::IdLabel(symbols[s]),
+                    match op {
+                        Operand::LocalLabel(l) => *op = Operand::IdLabel(loc_lbs[local_id][*l]),
+                        Operand::Label(l) => *op = Operand::IdLabel(labels[*l]),
+                        Operand::Symbol(s) => *op = Operand::IdLabel(symbols[*s]),
+                        Operand::Ident(id) => if let Some(i) = defines.get(*id) {
+                            *op = i.clone();
+                        },
                         _ => {},
                     }
                 },
@@ -167,7 +173,12 @@ pub fn link_files<'a>(files: &mut [File<'a>]) {
                 Line::LocalLabelDef(lb) => {
                     *l = Line::LabelIdDef(loc_lbs[local_id][*lb]);
                 },
+                Line::Define(..) => remove.push(li),
             }
+        }
+
+        for r in remove.iter().rev() {
+            f.lines.remove(*r);
         }
     }
 }
@@ -185,7 +196,7 @@ impl File<'_> {
                     Line::Instruction(inst, ops) if inst.eq_ignore_ascii_case("dw") => {
                         write!(w, "{inst} [")?;
                         for op in ops.iter() {
-                            write!(w, " {}", op.node)?;
+                            write!(w, " {op}")?;
                         }
                         writeln!(w, " ]")?;
 
@@ -195,10 +206,12 @@ impl File<'_> {
                     Line::Instruction(inst, ops) => {
                         write!(w, "{inst}")?;
                         for op in ops.iter() {
-                            write!(w, " {}", op.node)?;
+                            write!(w, " {op}")?;
                         }
                         writeln!(w)?;
                     },
+
+                    Line::Define(from, to) => writeln!(w, "@define {from} {to}")?,
 
                     Line::LocalLabelDef(lb) => writeln!(w, "..{lb}")?,
                     Line::LabelDef(lb) => writeln!(w, ".{lb}")?,
