@@ -1,0 +1,25 @@
+// gcc cdecl-like calling conv
+// r1: return value
+// r1-r3: caller save
+// r4-r8: callee save
+// argument passed rtl on stack
+
+!printf .printf
+    llod r1 sp 1 // string ptr
+    lod r2 r1    // char
+    brz ..end r2
+    ..print
+        bre ..percent r2 '%'
+        out %text r2
+
+        ..continue
+        inc r1 r1
+        lod r2 r1
+    bnz ..print r2
+    ..end
+ret
+
+..percent
+    inc r1 r1
+    lod r2 r1
+jmp ..continue

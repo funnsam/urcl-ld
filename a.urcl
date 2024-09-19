@@ -1,20 +1,17 @@
 bits 16
 
-@define .func !print
-
 cal !_start
 hlt
 
 !_start .F0
-mov r1 .message1
-cal .func
-mov r1 .message2
-cal .func
-jmp ..exit
-..exit
+psh .message2
+psh .message1
+cal !printf
+pop r0
+pop r0
 ret
 
 .message1
-dw ["Hello, World 1!\n" 0]
+dw ["Hello, %s!\n" 0]
 .message2
-dw ["Hello, World 2!\n" 0]
+dw ["World" 0]
