@@ -132,7 +132,19 @@ pub fn link_files<'a>(files: &mut [File<'a>]) -> Result<(), LinkError> {
     let mut remove = Vec::new();
 
     for (fi, f) in files.iter_mut().enumerate() {
-        defines.clear();
+        for l in f.lines.iter_mut() {
+            match &l.node {
+                Line::Define(from, to) => {
+                    if defines.contains_key(&from.node) { return Err(LinkErrorType::DuplicatedDefine.full(fi, l.span.clone())); }
+
+                    defines.insert(from.node.clone(), to.clone());
+                },
+                _ => {},
+            }
+        }
+    }
+
+    for (fi, f) in files.iter_mut().enumerate() {
         labels.clear();
         if loc_lbs.len() != 1 { loc_lbs.drain(1..); }
         loc_lbs[0].clear();
@@ -159,11 +171,6 @@ pub fn link_files<'a>(files: &mut [File<'a>]) -> Result<(), LinkError> {
                         .or_insert(symbols[*sym]);
                     l.node = Line::LabelIdDef(id);
                     loc_lbs.push(HashMap::new());
-                },
-                Line::Define(from, to) => {
-                    if defines.contains_key(&from.node) { return Err(LinkErrorType::DuplicatedDefine.full(fi, l.span.clone())); }
-
-                    defines.insert(from.node.clone(), to.clone());
                 },
                 _ => {},
             }
