@@ -218,7 +218,7 @@ fn resolve_operand<'a>(
         Operand::Symbol(s)
             => Ok(Operand::IdLabel(*symbols.get(s).ok_or(LinkErrorType::UnknownSymbol)?)),
         Operand::Ident(id) if !(id.eq_ignore_ascii_case("sp") || id.eq_ignore_ascii_case("pc"))
-            => Err(LinkErrorType::UnknownIdent),
+            => Ok(Operand::Ident(id)),
         _ => Ok(op.node),
     }
 }

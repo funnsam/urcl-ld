@@ -1,5 +1,6 @@
 bits 16
 
+imm r1 @minheap
 cal !_start
 hlt
 
